@@ -1,5 +1,13 @@
 var MM = MM || {};
 
+// browserify & webpack support
+
+if ( typeof module === 'object' ) {
+
+	module.exports = MM;
+
+}
+
 MM.Loader = (function() {
 
 	function Loader() {
@@ -174,7 +182,7 @@ MM.Loader = (function() {
 			this._sendComplete();
 		}
 
-	 	while (this._loadQueue.length && this._currentLoads.length < this._maxConnections) {
+		 while (this._loadQueue.length && this._currentLoads.length < this._maxConnections) {
 			loadItem = this._loadQueue.shift();
 			this._currentLoads.push(loadItem);
 		}
@@ -257,7 +265,7 @@ MM.Loader = (function() {
 				break;
 			case "svg":
 				tag = this._createSVG();
-			 	tag.appendChild(this._createXML(data, "image/svg+xml"));
+				 tag.appendChild(this._createXML(data, "image/svg+xml"));
 				break;
 			case "xml":
 				resultData = this._createXML(data, "text/xml");
@@ -289,7 +297,7 @@ MM.Loader = (function() {
 			resultData = parser.parseFromString(data, type);
 		} else {
 			 // Internet Explorer
-		 	parser = new ActiveXObject("Microsoft.XMLDOM");
+			 parser = new ActiveXObject("Microsoft.XMLDOM");
 			parser.async = false;
 			parser.loadXML(data);
 			resultData = parser;
