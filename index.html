@@ -3,9 +3,9 @@
 	<head>
 		<style>
 		#l {
-			width:50px;
-			height:50px;
-			background:yellow;
+			width:100px;
+			height:100px;
+			background:orange;
 			position:absolute;
 			top:0;left:0;
 		}
@@ -16,190 +16,81 @@
 	</body>
 </html>
 <script type="text/worker" id="worker-xhr">
-	self.addEventListener("message", function(event) {
-		function XHRLoader(file) {
-			this.loaded = false;
-			this.progress = 0;
-			this._item = file;
-			this._createXHR(file);
-			this.load();
+	var xhrs = [];
+
+	function onComplete(xhr) {
+		for (var i = 0, l = xhrs.length; i < l; i++) {
+			if (xhrs[i].src == xhr.responseURL) {
+				xhrs.splice(i, 1);
+				postMessage(JSON.parse(JSON.stringify({proxy : "oncomplete", data: {response: xhr.response, src: xhr.responseURL }})));
+				break;
+			}
 		}
+	}
 
-		XHRLoader.prototype.load = function() {
-			if (this._request === null) {
-				this.handleError();
-				return;
+	function onAbort(event) {
+		i = xhrs.length;
+		while (i--) {
+			if(xhrs[i].src == event.file.src) {
+				xhrs[i].xhr.abort();
+				xhrs.splice(i, 1)
 			}
-			this._request.onloadstart = this.handleLoadStart.bind(this);
-			this._request.onprogress = this.handleProgress.bind(this);
-			this._request.onabort = this.handleAbort.bind(this);
-			this._request.onerror = this.handleError.bind(this);
-			this._request.onload = this.handleLoad.bind(this);
-			this._request.onreadystatechange = this.handleReadyStateChange.bind(this);
-			try {
-				this._request.send();
-			} catch (error) {
-				this._sendError({source: error});
-			}
-		};
+		}
+	}
 
-		XHRLoader.prototype.getResult = function() {
-			try {
-				return this._request.responseText;
-			} catch (error) {
-			}
-			return this._request.response;
-		};
+	self.addEventListener('message', function(e) {
+		switch (e.data.proxy) {
+			case "load":
+				var xhr = new XHRRequest(e.data.data.src, onComplete).xhr;
+				xhrs.push({ src: e.data.data.src, xhr: xhr })
+				break;
+			case "abort":
+				onAbort(e.data);
+				break;
+		}
+	}, false);
 
-		XHRLoader.prototype.handleProgress = function(event) {
-			this._sendProgress({loaded: event.loaded, total: event.total});
-		};
+	
+	function XHRRequest(url, callback) {
+		this.xhr = new XMLHttpRequest();
+		this.callback = callback;
+		this.xhr.onprogress = this.handleProgress.bind(this);
+		this.xhr.onload = this.handleLoad.bind(this);
+		this.xhr.onabort = this.handleAbort.bind(this);
 
-		XHRLoader.prototype.handleLoadStart = function() {
-			this._sendLoadStart();
-		};
+		this.xhr.open("GET", url);
+		this.xhr.send(null);
 
-		XHRLoader.prototype.handleAbort = function() {
-			this._clean();
-			this._sendError();
-		};
+	}
 
-		XHRLoader.prototype.handleError = function() {
-			this._clean();
-			this._sendError();
-		};
+	XHRRequest.prototype.handleProgress = function(event) {
+		obj = JSON.parse(JSON.stringify({proxy : "onprogress", data: {loaded: event.loaded, total: event.total, src: event.target.responseURL }}));
+		postMessage(obj);
+	}
 
-		XHRLoader.prototype.handleReadyStateChange = function() {
-			if (this._request.readyState === 4) {
-				this.handleLoad();
-			}
-		};
+	XHRRequest.prototype.handleAbort = function() {
+		this.clean();
+	}
 
-		XHRLoader.prototype._checkError = function() {
-			var status = parseInt(this._request.status, 10);
-			switch (status) {
-				case 404:   // Not Found
-				case 0:     // Not Loaded
-					return false;
-			}
-			return this._hasResponse() || this._hasTextResponse() || this._hasXMLResponse();
-		};
+	XHRRequest.prototype.clean = function() {
+		this.xhr.onload = null;
+		this.xhr.onabort = null;
+		this.xhr.onprogress = null;
+		this.callback = null;
+		this.xhr = null;
+	}
 
-		XHRLoader.prototype._hasResponse = function() {
-			return this._request.response !== null;
-		};
+	XHRRequest.prototype.handleLoad = function(event) {
+		if(this.xhr.readyState < 4 || this.xhr.status !== 200) {
+			this.clean();
+			return;
+		}
+		if(this.xhr.readyState === 4 && this.callback) {
+			this.callback(this.xhr);
+			this.clean();
+		}	
+	}
 
-		XHRLoader.prototype._hasTextResponse = function() {
-			try {
-				return this._request.responseText !== null;
-			} catch (e) {
-				return false;
-			}
-		};
-
-		XHRLoader.prototype._hasXMLResponse = function() {
-			try {
-				return this._request.responseXML !== null;
-			} catch (e) {
-				return false;
-			}
-		};
-
-		XHRLoader.prototype.handleLoad = function() {
-			if (this.loaded) {
-				return;
-			}
-			this.loaded = true;
-
-			if (!this._checkError()) {
-				this.handleError();
-				return;
-			}
-
-			this._clean();
-			this._sendComplete();
-		};
-
-		XHRLoader.prototype._createXHR = function(item) {
-			this._request = new XMLHttpRequest();
-
-			// A synchronous request does not usually block
-			// execution is the use of XMLHttpRequest within a Worker.
-			// Whereas a asynchronous request in a Worker causes some troubles.
-			this._request.open('GET', item.src, false);
-			switch (item.type) {
-				case "sound":
-					this._request.responseType = 'arraybuffer';
-				case "text": 
-					if(this._request.overrideMimeType) {
-						this._request.overrideMimeType('text/plain; charset=x-user-defined');
-					}
-			}
-
-			return true;
-		};
-
-		XHRLoader.prototype._clean = function() {
-			var rq = this._request;
-			rq.onloadstart = null;
-			rq.onprogress = null;
-			rq.onabort = null;
-			rq.onerror = null;
-			rq.onload = null;
-			rq.onloadend = null;
-			rq.onreadystatechange = null;
-		};
-
-		//Callback proxies
-		XHRLoader.prototype._sendLoadStart = function() {
-			postMessage(JSON.parse(JSON.stringify({proxy : "onloadstart", data: {target: this}})));
-		};
-
-		XHRLoader.prototype._sendProgress = function(value) {
-			var event;
-			if (value instanceof Number) {
-				this.progress = value;
-				event = {loaded: this.progress, total: 1};
-			} else {
-				event = value;
-				this.progress = value.loaded / value.total;
-			}
-			event.target = this;
-			obj = JSON.parse(JSON.stringify({proxy : "onloadprogress", data: event}));
-			postMessage(obj);
-		};
-
-		XHRLoader.prototype._sendFileProgress = function(event) {
-			event.target = this;
-			obj = JSON.parse(JSON.stringify({proxy : "onfileprogress", data: event}));
-			postMessage(obj);
-		};
-
-		XHRLoader.prototype._sendComplete = function() {
-			// we wanna send the minimum required to avoid overkill
-			obj = JSON.parse(JSON.stringify(this));
-			delete(obj._request);
-			obj._request = { response : this.getResult() };
-			obj = JSON.parse(JSON.stringify({proxy : "oncomplete", data: {target: obj}}));
-			postMessage(obj);
-		};
-
-		XHRLoader.prototype._sendFileComplete = function(event) {
-			event.target = this;
-			obj = JSON.parse(JSON.stringify({proxy : "onfilecomplete", data: event}));
-			postMessage(obj);
-		};
-
-		XHRLoader.prototype._sendError = function(event) {
-			if (event === null) {
-				event = {};
-			}
-			event.target = this;
-			obj = JSON.parse(JSON.stringify({proxy : "onerror", data: event}));
-			postMessage(obj);
-		};
-		new XHRLoader(event.data);
-	});
 </script>
 <script type="text/javascript" src="WebWorkerUtils.js" ></script>
 <script type="text/javascript" src="MM.loader.js" ></script>
@@ -210,16 +101,18 @@
 // absolute paths
 var absPath = window.location.href;
 var files = [
-	absPath + "sample.yml",
-	absPath + "sample.json",
-	absPath + "16384.rnd"
+	{src: absPath + "sample.yml"},
+	{src: absPath + "16384.rnd"}
+];
+
+var files2 = [
+	{src: absPath + "sample.json"},
+	{src: absPath + "sample.txt"}
 ];
 
 var loader = new MM.Loader();
-setTimeout(function(){
-	loader.loadManifest(files);
-}, 1500);
-
+loader.load(files2);
+loader.load(files, true);
 
 loader.onFileLoad = function(event) {
 	console.log(event);

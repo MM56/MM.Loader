@@ -1,222 +1,51 @@
 var MM = MM || {};
 
 // browserify & webpack support
-
 if ( typeof module === 'object' ) {
-
 	module.exports = MM;
-
 }
 
 MM.Loader = (function() {
 
 	function Loader() {
-		this._maxConnections = 1;
-		this._numItems = 0;
-		this._numItemsLoaded = 0;
-		this._paused = false;
-		this._currentLoads = [];
-		this._loadQueue = [];
-		this._loadedItemsById = {};
-		this._loadedItemsBySrc = {};
-		this._loadStartWasDispatched = false;
-		this.loaded = false;
+
+		this.numItems = 0;
+		this.numItemsLoaded = 0;
+
+		this.currentLoads = [];
+		this.loadQueue = [];
 		this.progress = 0;
+
 		this.onProgress = null;
-		this.onLoadStart = null;
 		this.onFileLoad = null;
-		this.onFileProgress = null;
 		this.onComplete = null;
-		this.onError = null;
-		this.workerXHR = getWorkerInstance(document.getElementById("worker-xhr").textContent);
+
+		this.worker = getWorkerInstance(document.getElementById("worker-xhr").textContent);
 		self = this;
-		this.workerXHR.onmessage = function(event) {
+		this.worker.onmessage = function(event) {
 			data = event.data;
 			switch (data.proxy) {
-				case "onloadstart":
-					break;
-				case "onloadprogress":
-					self._handleProgress(data.data);
-					break;
-				case "onfileprogress":
+				case "onprogress":
+					self.handleFileProgress(data.data);
 					break;
 				case "oncomplete":
-					self._handleFileComplete(data.data);
-					break;
-				case "onfilecomplete":
-					break;
-				case "onerror":
-					self._handleFileError(data.data);
+					self.handleFileComplete(data.data);
 					break;
 			}
 		}
 	}
 
-	Loader.prototype._sendLoadStart = function() {
-		if(this.onLoadStart) {
-			this.onLoadStart({target: this});
-		}
-	};
+	Loader.prototype.handleFileComplete = function(event) {
+		var item = this.findBySrc(this.currentLoads, event.src);
+		this.removeLoadItem(event.src);
+		item.result = this.createResult(item, event.response );
+		delete(item.progress);
 
-	Loader.prototype._sendProgress = function(value) {
-		var event;
-		if (value instanceof Number) {
-			this.progress = value;
-			event = {loaded: this.progress, total: 1};
-		} else {
-			event = value;
-			this.progress = value.loaded / value.total;
-		}
-		event.target = this;
-		if (this.onProgress) {
-			this.onProgress(event);
-		}
-	};
-
-	Loader.prototype._sendFileProgress = function(event) {
-		if(this.onFileProgress) {
-			event.target = this;
-			this.onFileProgress(event);
-		}
-	};
-
-	Loader.prototype._sendComplete = function() {
-		if(this.onComplete) {
-			this.onComplete({target: this});
-		}
-	};
-
-	Loader.prototype._sendFileComplete = function(event) {
-		if(this.onFileLoad) {
-			event.target = this;
-			this.onFileLoad(event);
-		}
-	};
-
-	Loader.prototype._sendError = function(event) {
-		if(this.onError) {
-			if (event === null) {
-				event = {};
-			}
-			event.target = this;
-			this.onError(event);
-		}
-	};
-
-	Loader.prototype.setMaxConnections = function(value) {
-		this._maxConnections = value;
-		if (!this._paused) {
-			this._loadNext();
-		}
-	};
-
-	Loader.prototype.loadManifest = function(manifest) {
-		var data;
-
-		if (manifest instanceof Array) {
-			if (manifest.length === 0) {
-				this._sendError({text: "Manifest is empty."});
-				return;
-			}
-			data = manifest;
-		} else {
-			if (manifest === null) {
-				this._sendError({text: "Manifest is null."});
-				return;
-			}
-			data = [manifest];
-		}
-
-		for (var i = 0; i < data.length; i++) {
-			this._addItem(data[i]);
-		}
-		this._updateProgress();
-		this._loadNext();
-	};
-
-	Loader.prototype.load = function() {
-		this.setPaused(false);
-	};
-
-	Loader.prototype.getResult = function(value) {
-		return this._loadedItemsById[value] || this._loadedItemsBySrc[value];
-	};
-
-	Loader.prototype.setPaused = function(value) {
-		this._paused = value;
-		if (!this._paused) {
-			this._loadNext();
-		}
-	};
-
-	Loader.prototype.close = function() {
-		while (this._currentLoads.length) {
-			this._currentLoads.pop().cancel();
-		}
-		this._currentLoads = [];
-		this._scriptOrder = [];
-		this._loadedScripts = [];
-	};
-
-	Loader.prototype._addItem = function(item) {
-		var loadItem = this._createLoadItem(item);
-		if (loadItem !== null) {
-			this._loadQueue.push(loadItem);
-			this._numItems++;
-		}
-	};
-
-	Loader.prototype._loadNext = function() {
-		var loadItem;
-		if (this._paused) {
-			return;
-		}
-
-		if (!this._loadStartWasDispatched) {
-			this._sendLoadStart();
-			this._loadStartWasDispatched = true;
-		}
-
-		if (this._numItems === this._numItemsLoaded) {
-			this.loaded = true;
-			this._sendComplete();
-		}
-
-		while (this._loadQueue.length && this._currentLoads.length < this._maxConnections) {
-			loadItem = this._loadQueue.shift();
-			this._currentLoads.push(loadItem);
-		}
-	};
-
-	Loader.prototype._handleFileError = function(event) {
-		var loader = event.target;
-		var resultData = this._createResultData(loader._item);
-		this._numItemsLoaded++;
-		this._updateProgress();
-		this._sendError(resultData);
-		this._removeLoadItem(loader);
-		this._loadNext();
-	};
-
-	Loader.prototype._createResultData = function(item) {
-		var resultData = {id: item.id, result: null, data: item.data, type: item.type, src: item.src};
-		this._loadedItemsById[item.id] = resultData;
-		this._loadedItemsBySrc[item.src] = resultData;
-		return resultData;
-	};
-
-	Loader.prototype._handleFileComplete = function(event) {
-		var loader = event.target;
-		var item = loader._item;
-		var resultData = this._createResultData(item);
-		this._removeLoadItem(loader);
-
-		resultData.result = this._createResult(item, loader._request.response );
 		switch (item.type) {
 			case "image":
 				var _this = this;
-				resultData.result.onload = function() {
-					_this._handleFileTagComplete(item, resultData);
+				item.result.onload = function() {
+					_this.handleFileTagComplete(item);
 				};
 				return;
 				break;
@@ -226,49 +55,165 @@ MM.Loader = (function() {
 			default:
 				break;
 		}
-
-		this._handleFileTagComplete(item, resultData);
+		this.handleFileTagComplete(item);
 	};
 
-	Loader.prototype._handleFileTagComplete = function(item, resultData) {
-		this._numItemsLoaded++;
-		if (item.completeHandler) {
-			item.completeHandler(resultData);
+	Loader.prototype.handleFileProgress = function(event) {
+		var item = this.findBySrc(this.currentLoads, event.src);
+		if(item == undefined) {
+			return;
 		}
-		this._updateProgress();
-		this._sendFileComplete(resultData);
-		this._loadNext();
+		item.progress = event.loaded / event.total;
+		this.updateProgress()
+	}
+
+	Loader.prototype.handleFileTagComplete = function(item) {
+		this.numItemsLoaded++;
+		this.updateProgress();
+		if(this.onFileLoad) {
+			this.onFileLoad(item);
+		}
+
+		this.loadNext();
 	};
 
-	Loader.prototype._removeLoadItem = function(loader) {
-		var l = this._currentLoads.length;
-		for (var i = 0; i < l; i++) {
-			if (this._currentLoads[i] === loader) {
-				this._currentLoads.splice(i, 1);
+	Loader.prototype.abort = function(file) {
+		this.worker.postMessage({ proxy:"abort", file: file });
+	};
+
+	Loader.prototype.clean = function() {
+		this.currentLoads = [];
+		this.loadQueue = [];
+		this.numItems = 0;
+		this.numItemsLoaded = 0;
+		this.progress = 0;
+	}
+
+	/**
+	* If you call load method during a previous load, it will abort it.
+	* If you pass true as a parameter, we consider you want to store the previous load aborted which will be reload after the new load.
+	**/
+	Loader.prototype.load = function(manifest, priority) {
+		var data;
+
+		priority = priority || false;
+		if(this.currentLoads.length > 0) {
+			var tmp = [];
+			for(var i = 0; i < this.currentLoads.length; i++) {
+				this.abort(this.currentLoads[i]);
+				if(priority) {
+					tmp.push({ src:this.currentLoads[i].src, id:this.currentLoads[i].id })
+				}
+			}
+			
+			this.clean();
+			manifest = manifest.concat(tmp)
+		}
+
+		if (manifest instanceof Array) {
+			if (manifest.length === 0) {
+				console.error("Manifest is empty.");
 				return;
+			}
+			data = manifest;
+		} else {
+			if (manifest === null) {
+				console.error("Manifest is null.");
+				return;
+			}
+			data = [manifest];
+		}
+		for (var i = 0, l = data.length; i < l; i++) {
+			var loadItem = this.createLoadItem(data[i]);
+			if (loadItem !== null) {
+				this.loadQueue.push(loadItem);
+				this.numItems++;
+			}
+		}
+
+		this.updateProgress();
+		this.loadNext();
+	};
+
+	Loader.prototype.loadNext = function() {
+		var loadItem;
+
+		if (this.numItems === this.numItemsLoaded) {
+			if(this.onComplete) {
+				this.onComplete({target: this});
+			}
+		}
+
+		while (this.loadQueue.length) {
+			loadItem = this.loadQueue.shift();
+			this.currentLoads.push(loadItem);
+		}
+	};
+
+	Loader.prototype.findBySrc = function(array, src) {
+		for (var i = 0, l = array.length; i < l; i++) {
+			if(array[i].src == src) {
+				return array[i];
+			}
+		}
+	}
+
+	Loader.prototype.updateProgress = function() {
+		var loaded = this.numItemsLoaded / this.numItems;
+		var remaining = this.numItems - this.numItemsLoaded;
+		if (remaining > 0) {
+			var chunk = 0;
+			for (var i = 0, l = this.currentLoads.length; i < l; i++) {
+				if(this.currentLoads[i].progress == undefined) {
+					this.currentLoads[i].progress = 0;
+				}
+				chunk += this.currentLoads[i].progress;
+			}
+
+			loaded += (chunk / remaining) * (remaining / this.numItems);
+		}
+
+		var event = { loaded: loaded, total: 1 };
+		this.progress = event.loaded / event.total;
+		if (isNaN(this.progress) || this.progress === Infinity) {
+			this.progress = 0;
+		}
+		event.target = this;
+		if (this.onProgress) {
+			this.onProgress(event);
+		}
+
+	};
+
+	Loader.prototype.removeLoadItem = function(src) {
+		i = this.currentLoads.length;
+		while (i--) {
+			if (this.currentLoads[i].src == src) {
+				this.currentLoads.splice(i, 1);
+				break;
 			}
 		}
 	};
 
-	Loader.prototype._createResult = function(item, data) {
+	Loader.prototype.createResult = function(item, data) {
 		var tag = null;
 		var resultData;
 		switch (item.type) {
 			case "image":
-				tag = this._createImage();
+				tag = this.createImage();
 				break;
 			case "sound":
-				tag = item.tag || this._createAudio();
+				tag = item.tag || this.createAudio();
 				break;
 			case "css":
-				tag = this._createLink();
+				tag = this.createLink();
 				break;
 			case "svg":
-				tag = this._createSVG();
-				tag.appendChild(this._createXML(data, "image/svg+xml"));
+				tag = this.createSVG();
+				tag.appendChild(this.createXML(data, "image/svg+xml"));
 				break;
 			case "xml":
-				resultData = this._createXML(data, "text/xml");
+				resultData = this.createXML(data, "text/xml");
 				break;
 			case "json":
 			case "text":
@@ -287,7 +232,7 @@ MM.Loader = (function() {
 		}
 	};
 
-	Loader.prototype._createXML = function(data, type) {
+	Loader.prototype.createXML = function(data, type) {
 		var resultData;
 		var parser;
 
@@ -306,32 +251,7 @@ MM.Loader = (function() {
 		return resultData;
 	};
 
-	Loader.prototype._handleProgress = function(event) {
-		var loader = event.target;
-		var resultData = this._createResultData(loader._item);
-		resultData.progress = loader.progress;
-		this._sendFileProgress(resultData);
-		this._updateProgress();
-	};
-
-	Loader.prototype._updateProgress = function() {
-		var loaded = this._numItemsLoaded / this._numItems;
-		var remaining = this._numItems - this._numItemsLoaded;
-		if (remaining > 0) {
-			var chunk = 0;
-			for (var i = 0, l = this._currentLoads.length; i < l; i++) {
-				if(this._currentLoads[i].progress == undefined) {
-					this._currentLoads[i].progress = 0;
-				}
-				chunk += this._currentLoads[i].progress;
-			}
-
-			loaded += (chunk / remaining) * (remaining / this._numItems);
-		}
-		this._sendProgress({loaded: loaded, total: 1});
-	};
-
-	Loader.prototype._createLoadItem = function(loadItem) {
+	Loader.prototype.createLoadItem = function(loadItem) {
 		var item = {};
 
 		switch (typeof(loadItem)) {
@@ -351,15 +271,16 @@ MM.Loader = (function() {
 				break;
 		}
 
-		item.extension = this._getNameAfter(item.src, ".");
+		item.extension = this.getNameAfter(item.src, ".");
 		if (!item.type) {
 			item.type = this.getType(item.extension);
 		}
+
 		if (item.id === null || item.id === "") {
 			item.id = item.src;
 		}
 
-		this.workerXHR.postMessage(item);
+		this.worker.postMessage({ proxy:"load", data: item });
 		return item;
 	};
 
@@ -389,37 +310,37 @@ MM.Loader = (function() {
 		}
 	};
 
-	Loader.prototype._getNameAfter = function(path, token) {
+	Loader.prototype.getNameAfter = function(path, token) {
 		var dotIndex = path.lastIndexOf(token);
 		var lastPiece = path.substr(dotIndex + 1);
 		var endIndex = lastPiece.lastIndexOf(/[\b|\?|#|\s]/);
 		return (endIndex === -1) ? lastPiece : lastPiece.substr(0, endIndex);
 	};
 
-	Loader.prototype._createImage = function() {
+	Loader.prototype.createImage = function() {
 		return document.createElement("img");
 	};
 
-	Loader.prototype._createSVG = function() {
+	Loader.prototype.createSVG = function() {
 		var tag = document.createElement("object");
 		tag.type = "image/svg+xml";
 		return tag;
 	};
 
-	Loader.prototype._createAudio = function() {
+	Loader.prototype.createAudio = function() {
 		var tag = document.createElement("audio");
 		tag.autoplay = false;
 		tag.type = "audio/ogg";
 		return tag;
 	};
 
-	Loader.prototype._createScript = function() {
+	Loader.prototype.createScript = function() {
 		var tag = document.createElement("script");
 		tag.type = "text/javascript";
 		return tag;
 	};
 
-	Loader.prototype._createLink = function() {
+	Loader.prototype.createLink = function() {
 		var tag = document.createElement("link");
 		tag.type = "text/css";
 		tag.rel = "stylesheet";
